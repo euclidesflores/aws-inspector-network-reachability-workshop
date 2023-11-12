@@ -1,5 +1,5 @@
 provider "aws" {
-  region = var.region
+  region     = var.region
 }
 
 locals {
@@ -1091,88 +1091,88 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 def handler(event, context):
+  logger.debug('Raw Lambda event:')
+  logger.debug(event)
 
- logger.debug('Raw Lambda event:')
- logger.debug(event)
+  # extract the message that Inspector sent via SNS
+  message = event['Records'][0]['Sns']['Message']
+  logger.debug('Event from SNS: ' + message)
 
- # extract the message that Inspector sent via SNS
- message = event['Records'][0]['Sns']['Message']
- logger.debug('Event from SNS: ' + message)
+  # get inspector notification type
+  notificationType = json.loads(message)['event']
+  logger.info('Inspector SNS message type: ' + notificationType)
 
- # get inspector notification type
- notificationType = json.loads(message)['event']
- logger.info('Inspector SNS message type: ' + notificationType)
+  # skip everything except report_finding notifications
+  if notificationType != "FINDING_REPORTED":
+      logger.info(
+          'Skipping notification that is not a new finding: ' + notificationType)
+      return 1
 
- # skip everything except report_finding notifications
- if notificationType != \"FINDING_REPORTED\":
-  logger.info('Skipping notification that is not a new finding: ' + notificationType)
-  return 1
+  # extract finding ARN
+  findingArn = json.loads(message)['finding']
+  logger.info('Finding ARN: ' + findingArn)
 
- # extract finding ARN
- findingArn = json.loads(message)['finding']
- logger.info('Finding ARN: ' + findingArn)
+  # get finding and extract detail
+  response = inspector.describe_findings(findingArns = [ findingArn ])
+  logger.debug('Inspector DescribeFindings response:')
+  logger.debug(response)
+  finding = response['findings'][0]
+  logger.debug('Raw finding:')
+  logger.debug(finding)
 
- # get finding and extract detail
- response = inspector.describe_findings(findingArns = [ findingArn ])
- logger.debug('Inspector DescribeFindings response:')
- logger.debug(response)
- finding = response['findings'][0]
- logger.debug('Raw finding:')
- logger.debug(finding)
+  # skip uninteresting findings
+  title = finding['title']
+  logger.debug('Finding title: ' + title)
 
- # skip uninteresting findings
- title = finding['title']
- logger.debug('Finding title: ' + title)
+  if title == "Unsupported Operating System or Version":
+    logger.info('Skipping finding: ' + title)
+    return 1
 
- if title == \"Unsupported Operating System or Version\":
-  logger.info('Skipping finding: ' + title)
-  return 1
+  if title == "No potential security issues found":
+    logger.info('Skipping finding: ' + title)
+    return 1
 
- if title == \"No potential security issues found\":
-  logger.info('Skipping finding: ' + title)
-  return 1
+  service = finding['service']
+  logger.debug('Service: ' + service)
+  if service != "Inspector":
+    logger.info('Skipping finding from service: ' + service)
+    return 1
 
- service = finding['service']
- logger.debug('Service: ' + service)
- if service != \"Inspector\":
-  logger.info('Skipping finding from service: ' + service)
-  return 1
-
- #Look for the Internet Accessible Instances with SSH open
- reachabilityPort = \"\"
- naclToChange = \"\"
- findingId =  finding['id']
- if findingId == \"Recognized port with listener reachable from internet\":
-  logger.info('Found open port to the World - Inspector finding')
-  for attribute in finding['attributes']:
-   if attribute['key'] == \"PORT\":
-    reachabilityPort = attribute['value']
-    if reachabilityPort != \"22\":
-     logger.info('Found port' + reachabilityPort + 'open to the internet')
-     return 1
-   if attribute['key'] == \"ACL\":
-    naclToChange = attribute['value']
-  if reachabilityPort != \"\" and naclToChange != \"\":
-   # Setup a NACL to deny inbound and outbound port 22 from all IP from this subnet
-   ec2 = boto3.client('ec2')
-   response = ec2.create_network_acl_entry(
-   DryRun=False,
-   Egress=False,
-   NetworkAclId=naclToChange,
-   CidrBlock=\"0.0.0.0/0\",
-   Protocol=\"6\",
-   PortRange={
-    'From':22,
-    'To':22
-   },
-   RuleAction='deny',
-   RuleNumber=90
-   )
-   print(\"log -- Event: NACL Deny Rule for Recognized port with listener reachable from internet\")
- else:
-  print(\"log -- Event without defined action. No action taken.\")
-  return 1
- return response
+  #Look for the Internet Accessible Instances with SSH open
+  reachabilityPort = ""
+  naclToChange = ""
+  findingId =  finding['id']
+  if findingId == "Recognized port with listener reachable from internet":
+    logger.info('Found open port to the World - Inspector finding')
+    for attribute in finding['attributes']:
+      if attribute['key'] == "PORT":
+        reachabilityPort = attribute['value']
+        if reachabilityPort != "22":
+          logger.info('Found port' + reachabilityPort + 'open to the internet')
+          return 1
+      if attribute['key'] == "ACL":
+        naclToChange = attribute['value']
+    if reachabilityPort != "" and naclToChange != "":
+      # Setup a NACL to deny inbound and outbound port 22 from all IP from this subnet
+      ec2 = boto3.client('ec2')
+      response = ec2.create_network_acl_entry(
+      DryRun=False,
+      Egress=False,
+      NetworkAclId=naclToChange,
+      CidrBlock="0.0.0.0/0",
+      Protocol="6",
+      PortRange={
+        'From':22,
+        'To':22
+      },
+      RuleAction='deny',
+      RuleNumber=90
+      )
+      print("log -- Event: NACL Deny Rule for Recognized port with listener reachable from internet")
+  else:
+    print("log -- Event without defined action. No action taken.")
+    return 1
+  return response
     EOF
   }
 }
